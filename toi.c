@@ -5,15 +5,12 @@
 #include <hiredis/hiredis.h>
 #include <futile/coord.h>
 
-int main(int argc, char *argv[]) {
+typedef struct {
+    uint64_t *coord_ints;
+    size_t n;
+} toi_s;
 
-    if (argc != 2) {
-        printf("Usage: %s <redis-host>\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-
-    char *redis_host = argv[1];
-
+toi_s fetch_coord_ints(char *redis_host) {
     redisContext *context = redisConnect(redis_host, 6379);
     if (context != NULL && context->err) {
         printf("Error: %s\n", context->errstr);
@@ -24,21 +21,37 @@ int main(int argc, char *argv[]) {
         printf("Error: %s\n", context->errstr);
         exit(EXIT_FAILURE);
     }
-
-    unsigned int zoom_counts[21] = {0};
-
-    futile_coord_s coord = {0, 0, 0};
+    uint64_t *coord_ints = malloc(sizeof(uint64_t) * reply->elements);
+    size_t n = 0;
     for (size_t i = 0; i < reply->elements; i++) {
         redisReply *element = reply->element[i];
         char *coord_str = element->str;
         uint64_t coord_int;
         int scanned = sscanf(coord_str, "%" SCNu64, &coord_int);
         if (scanned != 1) {
-            printf("Could not convert %s to uint64\n", coord_str);
+            fprintf(stderr, "Could not convert %s to uint64\n", coord_str);
             continue;
         }
-        futile_coord_unmarshall_int(coord_int, &coord);
+        coord_ints[n++] = coord_int;
+    }
+    freeReplyObject(reply);
+    redisFree(context);
 
+    toi_s toi = {.coord_ints = coord_ints, .n = n};
+    return toi;
+}
+
+void free_toi(toi_s toi) {
+    free(toi.coord_ints);
+}
+
+void print_zoom_counts(toi_s toi) {
+    unsigned int zoom_counts[21] = {0};
+
+    futile_coord_s coord;
+    for (size_t toi_index = 0; toi_index < toi.n; toi_index++) {
+        uint64_t coord_int = toi.coord_ints[toi_index];
+        futile_coord_unmarshall_int(coord_int, &coord);
         if (coord.z > 20) {
             continue;
         }
@@ -49,10 +62,22 @@ int main(int argc, char *argv[]) {
         unsigned int zoom_count = zoom_counts[zoom_index];
         printf("%2d: %u\n", zoom_index, zoom_count);
     }
+}
 
-    freeReplyObject(reply);
+int main(int argc, char *argv[]) {
 
-    redisFree(context);
+    if (argc != 2) {
+        printf("Usage: %s <redis-host>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    char *redis_host = argv[1];
+
+    toi_s toi = fetch_coord_ints(redis_host);
+
+    print_zoom_counts(toi);
+
+    free_toi(toi);
 
     return 0;
 }
