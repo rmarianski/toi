@@ -61,13 +61,12 @@ toi_s read_toi_bin(char *filename) {
     off_t bin_size = stat_buf.st_size;
     unsigned int n_coord_ints = bin_size / sizeof(uint64_t);
     uint64_t *coord_ints = malloc(bin_size);
-    for (size_t i = 0; i < n_coord_ints; i++) {
-        int n_read = fread(coord_ints + i, sizeof(uint64_t), 1, fin);
-        if (n_read != 1) {
-            perror("fread");
-            exit(EXIT_FAILURE);
-        }
+    size_t n_read = fread(coord_ints, sizeof(uint64_t), n_coord_ints, fin);
+    if (n_read != n_coord_ints) {
+        perror("fread");
+        exit(EXIT_FAILURE);
     }
+
     int rc = fclose(fin);
     if (rc) {
         perror("fclose");
@@ -177,13 +176,10 @@ void dump(toi_s toi, char *filename) {
         exit(EXIT_FAILURE);
     }
 
-    for (size_t toi_index = 0; toi_index < toi.n; toi_index++) {
-        int n_written = fwrite(toi.coord_ints + toi_index, sizeof(uint64_t), 1, fout);
-        if (n_written != 1) {
-            perror("fwrite");
-            exit(EXIT_FAILURE);
-        }
-        assert(n_written == 1);
+    size_t n_written = fwrite(toi.coord_ints, sizeof(uint64_t), toi.n, fout);
+    if (n_written != toi.n) {
+        perror("fwrite");
+        exit(EXIT_FAILURE);
     }
 
     int rc = fclose(fout);
