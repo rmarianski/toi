@@ -106,12 +106,14 @@ typedef struct toi_hash_entry_s {
 } toi_hash_entry_s;
 
 unsigned int calc_hash(uint64_t coord_int) {
-    // TODO experiment here
-    // return coord_int;
-    // return 0;
+    const int prime = 12289;
     futile_coord_s coord;
     futile_coord_unmarshall_int(coord_int, &coord);
-    return coord.z * 7 + coord.x * 5 + coord.y * 3;
+    unsigned int result;
+    result = coord.z;
+    result = result * prime + coord.x;
+    result = result * prime + coord.y;
+    return result;
 }
 
 void print_hash_stats(toi_hash_entry_s **table, size_t hash_size) {
