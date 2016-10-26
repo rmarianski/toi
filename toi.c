@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <inttypes.h>
 #include <hiredis/hiredis.h>
-#include <futile/coord.h>
+#include <futile.h>
 
 typedef struct {
     uint64_t *coord_ints;
@@ -104,6 +104,11 @@ typedef struct toi_hash_entry_s {
     struct toi_hash_entry_s *next;
 } toi_hash_entry_s;
 
+typedef struct {
+    toi_hash_entry_s **table;
+    size_t size;
+} toi_hash_table_s;
+
 unsigned int calc_hash(uint64_t coord_int) {
     const int prime = 12289;
     futile_coord_s coord;
@@ -115,12 +120,12 @@ unsigned int calc_hash(uint64_t coord_int) {
     return result;
 }
 
-void print_hash_stats(toi_hash_entry_s **table, size_t hash_size) {
+void print_hash_stats(toi_hash_table_s *table) {
     const size_t lengths_size = 10000;
     unsigned int lengths[lengths_size];
     memset(lengths, 0, sizeof(lengths));
-    for (size_t entry_index = 0; entry_index < hash_size; entry_index++) {
-        toi_hash_entry_s *entry = table[entry_index];
+    for (size_t entry_index = 0; entry_index < table->size; entry_index++) {
+        toi_hash_entry_s *entry = table->table[entry_index];
         if (entry) {
             unsigned int length = 0;
             while (entry) {
@@ -136,18 +141,20 @@ void print_hash_stats(toi_hash_entry_s **table, size_t hash_size) {
     for (size_t length_index = 0; length_index < lengths_size; length_index++) {
         unsigned int length = lengths[length_index];
         if (length > 0) {
-            printf("%zu: %u\n", length_index + 1, length);
+            printf("%2zu: %u\n", length_index + 1, length);
         }
     }
 }
 
-void hash(toi_s toi) {
-    toi_hash_entry_s *entries = malloc(sizeof(toi_hash_entry_s) * toi.n);
+toi_hash_table_s create_hash(toi_s toi, size_t hash_size) {
+    unsigned int size_entries = sizeof(toi_hash_entry_s) * toi.n;
+    unsigned int size_buckets = sizeof(toi_hash_entry_s *) * hash_size;
+    unsigned int total_memory = size_entries + size_buckets;
+    void *memory = malloc(total_memory);
+    memset(memory, 0, total_memory);
 
-    size_t hash_size = pow(2, 24);
-    toi_hash_entry_s **table = malloc(sizeof(*(toi_hash_entry_s *)0) * hash_size);
-    memset(table, 0, sizeof(*(toi_hash_entry_s *)0) * hash_size);
-
+    toi_hash_entry_s **table = (toi_hash_entry_s **)memory;
+    toi_hash_entry_s *entries = (toi_hash_entry_s *)(table + hash_size);
     for (size_t toi_index = 0; toi_index < toi.n; toi_index++) {
         toi_hash_entry_s *entry = entries + toi_index;
         entry->coord_int = toi.coord_ints[toi_index];
@@ -163,10 +170,19 @@ void hash(toi_s toi) {
         }
         table[bucket] = entry;
     }
+    toi_hash_table_s result = {
+        .table = table,
+        .size = hash_size,
+    };
 
-    print_hash_stats(table, hash_size);
-    free(table);
-    free(entries);
+    return result;
+}
+
+void hash(toi_s toi) {
+    size_t hash_size = pow(2, 24);
+    toi_hash_table_s table = create_hash(toi, hash_size);
+    print_hash_stats(&table);
+    free(table.table);
 }
 
 void dump(toi_s toi, char *filename) {
@@ -200,14 +216,89 @@ typedef struct {
     char *value; // redis host or filename
 } input_source_s;
 
+typedef struct {
+    futile_coord_s start, end;
+    unsigned int end_zoom;
+} coord_range_s;
+
+typedef struct {
+    uint64_t *missing_coord_ints;
+    unsigned int n_missing_coord_ints;
+    unsigned int max_missing_coord_ints;
+    toi_hash_table_s *table;
+} command_diff_baton_s;
+
+bool table_contains_coord(toi_hash_table_s *table, uint64_t coord_int) {
+    bool result = false;
+    unsigned int hashcode = calc_hash(coord_int);
+    size_t bucket = hashcode & (table->size - 1);
+    for (toi_hash_entry_s *entry = table->table[bucket]; entry; entry = entry->next) {
+        if (entry->coord_int == coord_int) {
+            result = true;
+            break;
+        }
+    }
+    return result;
+}
+
+void command_diff_coord_to_check(futile_coord_s *coord, void *userdata_) {
+    command_diff_baton_s *userdata = (command_diff_baton_s *)userdata_;
+    uint64_t coord_int = futile_coord_marshall_int(coord);
+    if (!table_contains_coord(userdata->table, coord_int)) {
+        assert(userdata->n_missing_coord_ints < userdata->max_missing_coord_ints);
+        userdata->missing_coord_ints[userdata->n_missing_coord_ints++] = coord_int;
+    }
+}
+
+void diff(toi_s toi, coord_range_s *coord_range) {
+    assert(coord_range->end_zoom >= coord_range->start.z);
+    size_t hash_size = pow(2, 24);
+    toi_hash_table_s table = create_hash(toi, hash_size);
+    command_diff_baton_s userdata = {};
+    userdata.table = &table;
+    unsigned int max_missing_coord_ints = toi.n * 10;
+    userdata.missing_coord_ints = malloc(sizeof(uint64_t) * max_missing_coord_ints);
+    userdata.max_missing_coord_ints = max_missing_coord_ints;
+
+    futile_for_coord_zoom_range(
+        coord_range->start.x, coord_range->start.y,
+        coord_range->end.x, coord_range->end.y,
+        coord_range->start.z, coord_range->end_zoom,
+        command_diff_coord_to_check, &userdata);
+
+    unsigned int size_missing_coords_per_zoom = sizeof(unsigned int) * (
+            coord_range->end_zoom - coord_range->start.z + 1);
+    unsigned int *missing_coords_per_zoom = malloc(size_missing_coords_per_zoom);
+    memset(missing_coords_per_zoom, 0, size_missing_coords_per_zoom);
+    unsigned int base = coord_range->start.z;
+
+    for (unsigned int i = 0; i < userdata.n_missing_coord_ints; i++) {
+        uint64_t coord_int = userdata.missing_coord_ints[i];
+        futile_coord_s coord;
+        futile_coord_unmarshall_int(coord_int, &coord);
+        assert(coord.z >= base && coord.z <= coord_range->end_zoom);
+        unsigned int missing_coords_per_zoom_idx = coord.z - base;
+        missing_coords_per_zoom[missing_coords_per_zoom_idx]++;
+    }
+    for (unsigned int i = 0; i < 6; i++) {
+        unsigned int z = i + base;
+        printf("%u: %d\n", z, missing_coords_per_zoom[i]);
+    }
+
+    free(userdata.missing_coord_ints);
+    free(missing_coords_per_zoom);
+}
+
 int main(int argc, char *argv[]) {
 
     input_source_s input_source = {};
-    int command = 0; // print->1, hash->2, dump->3
+    int command = 0; // print->1, hash->2, dump->3, diff->4
     int opt;
     char *dump_filename = NULL;
+    char *coord_range_str = NULL;
+    coord_range_s coord_range = {};
 
-    while ((opt = getopt(argc, argv, "r:b:c:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "r:b:c:d:z:")) != -1) {
         switch (opt) {
         case 'r':
             input_source.type = 1;
@@ -224,6 +315,8 @@ int main(int argc, char *argv[]) {
                 command = 2;
             } else if (strcmp(optarg, "dump") == 0) {
                 command = 3;
+            } else if (strcmp(optarg, "diff") == 0) {
+                command = 4;
             } else {
                 usage(argv[0]);
             }
@@ -231,6 +324,23 @@ int main(int argc, char *argv[]) {
         case 'd':
             dump_filename = strdup(optarg);
             break;
+        case 'z': {
+            coord_range_str = strdup(optarg);
+            int n_scanned = sscanf(coord_range_str, "%10d/%10d/%10d-%10d/%10d/%10d-%2d",
+                                   &coord_range.start.z, &coord_range.start.x, &coord_range.start.y,
+                                   &coord_range.end.z, &coord_range.end.x, &coord_range.end.y,
+                                   &coord_range.end_zoom);
+            if (n_scanned != 7) {
+                fprintf(stderr, "Invalid coord range: %s\n", coord_range_str);
+                exit(EXIT_FAILURE);
+            }
+            assert(
+                coord_range.start.z == coord_range.end.z &&
+                coord_range.start.x <= coord_range.end.x &&
+                coord_range.start.y <= coord_range.end.y &&
+                coord_range.end_zoom >= coord_range.start.z
+                );
+        } break;
         default:
             usage(argv[0]);
         }
@@ -242,7 +352,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (!command) {
-        fprintf(stderr, "Must specify -c command <print|hash|dump>\n");
+        fprintf(stderr, "Must specify -c command <print|hash|dump|diff>\n");
         exit(EXIT_FAILURE);
     }
 
@@ -269,6 +379,13 @@ int main(int argc, char *argv[]) {
         }
         dump(toi, dump_filename);
         break;
+    case 4:
+        if (!coord_range_str) {
+            fprintf(stderr, "Must specify -z with diff command\n");
+            exit(EXIT_FAILURE);
+        }
+        diff(toi, &coord_range);
+        break;
     default:
         assert(!"Add command");
     }
@@ -276,6 +393,7 @@ int main(int argc, char *argv[]) {
     free_toi(toi);
     free(dump_filename);
     free(input_source.value);
+    free(coord_range_str);
 
     return 0;
 }
