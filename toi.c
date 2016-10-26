@@ -82,6 +82,7 @@ void free_toi(toi_s toi) {
 
 void print_zoom_counts(toi_s toi) {
     unsigned int zoom_counts[21] = {0};
+    unsigned int total = 0;
 
     futile_coord_s coord;
     for (size_t toi_index = 0; toi_index < toi.n; toi_index++) {
@@ -91,12 +92,14 @@ void print_zoom_counts(toi_s toi) {
             continue;
         }
         zoom_counts[coord.z] += 1;
+        total++;
     }
 
     for (int zoom_index = 0; zoom_index <= 20; zoom_index++) {
         unsigned int zoom_count = zoom_counts[zoom_index];
         printf("%2d: %u\n", zoom_index, zoom_count);
     }
+    printf("Total: %u\n", total);
 }
 
 typedef struct toi_hash_entry_s {
