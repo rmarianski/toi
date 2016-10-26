@@ -269,8 +269,8 @@ void diff(toi_s toi, coord_range_s *coord_range) {
         coord_range->start.z, coord_range->end_zoom,
         command_diff_coord_to_check, &userdata);
 
-    unsigned int size_missing_coords_per_zoom = sizeof(unsigned int) * (
-            coord_range->end_zoom - coord_range->start.z + 1);
+    unsigned int zoom_range = coord_range->end_zoom - coord_range->start.z + 1;
+    unsigned int size_missing_coords_per_zoom = sizeof(unsigned int) * zoom_range;
     unsigned int *missing_coords_per_zoom = malloc(size_missing_coords_per_zoom);
     memset(missing_coords_per_zoom, 0, size_missing_coords_per_zoom);
     unsigned int base = coord_range->start.z;
@@ -283,7 +283,7 @@ void diff(toi_s toi, coord_range_s *coord_range) {
         unsigned int missing_coords_per_zoom_idx = coord.z - base;
         missing_coords_per_zoom[missing_coords_per_zoom_idx]++;
     }
-    for (unsigned int i = 0; i < 6; i++) {
+    for (unsigned int i = 0; i < zoom_range; i++) {
         unsigned int z = i + base;
         printf("%u: %d\n", z, missing_coords_per_zoom[i]);
     }
