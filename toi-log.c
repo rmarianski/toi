@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <memory.h>
 #include <math.h>
+#define FUTILE_IMPLEMENTATION
 #include <futile.h>
 #include "hash.h"
 #include "util.h"
