@@ -32,7 +32,7 @@ typedef struct {
 void add_log_entry(tile_log_chunks_s *chunks, tile_log_entry_s *entry) {
     tile_log_chunk_s *chunk = chunks->first;
     if (!chunk || chunk->n_entries == chunks->chunk_size) {
-        chunk = malloc(sizeof(tile_log_chunk_s) + chunks->chunk_size * sizeof(tile_log_chunk_s));
+        chunk = malloc(sizeof(tile_log_chunk_s) + chunks->chunk_size * sizeof(tile_log_entry_s));
         chunk->entries = (tile_log_entry_s *)(chunk + 1);
         chunk->n_entries = 0;
         chunk->next = chunks->first;
